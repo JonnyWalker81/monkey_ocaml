@@ -3,3 +3,4 @@ type t =
   | Boolean of bool
   | String of string
   | Null
+[@@deriving show]
