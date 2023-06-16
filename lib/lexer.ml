@@ -62,6 +62,16 @@ let peek lexer ch current matched =
       (read_char lexer, matched)
     else (read_char lexer, current)
 
+let read_string lexer =
+  let rec loop lexer str =
+    match lexer.ch with
+    | '"' | '\x00' -> ( read_char lexer, str)
+    | _ -> let str  = str ^ Char.escaped lexer.ch in
+      loop (read_char lexer) str
+  in
+  let lexer, s = loop lexer "" in
+    (lexer, Token.String s)
+
 let next_token lexer =
   let lexer = skip_while is_whitespace lexer in
   let ch = lexer.ch in
@@ -80,6 +90,8 @@ let next_token lexer =
   | '/' -> (read_char lexer, Token.Slash)
   | '<' -> (read_char lexer, Token.LessThan)
   | '>' -> (read_char lexer, Token.GreaterThan)
+  | '"' -> let lexer, s = read_string (read_char  lexer) in
+      (lexer, s)
   | '\x00' -> (read_char lexer, Token.Eof)
   | ch when is_letter ch ->
       let l, ident = read_identifier lexer in
@@ -141,7 +153,10 @@ module Test = struct
    }
 
    10 == 10;
-   10 != 9;|}
+   10 != 9;
+   "foobar"
+   "foo bar"
+    |}
     in
 
     let tokens = generate_tokens input in
@@ -221,5 +236,8 @@ module Test = struct
     Token.NotEqual
     (Token.Integer "9")
     Token.Semicolon
-    Token.Eof|}]
+    (Token.String "foobar")
+    (Token.String "foo bar")
+    Token.Eof
+    |}]
 end

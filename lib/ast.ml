@@ -8,6 +8,7 @@ and expression =
   | Identifier of identifier
   | Integer of int
   | Boolean of bool
+  | String of string
   | Prefix of { operator : Token.t; right : expression }
   | Infix of { left : expression; operator : Token.t; right : expression }
   | If of {

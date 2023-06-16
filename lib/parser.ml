@@ -177,7 +177,13 @@ and parse_prefix_expression parser =
   | Token.LeftParen -> parse_grouped_expression parser
   | Token.If -> parse_if_expression parser
   | Token.Function -> parse_function_expression parser
+  | Token.String _ -> parse_string parser
   | tok -> failwith (Printf.sprintf "unhandled token: %s" (Token.show tok))
+
+and parse_string parser =
+  match parser.cur_token with
+  | Token.String s -> (parser, Ast.String s)
+  | _ -> failwith "expected string token"
 
 and parse_function_expression parser =
   let parser, ok = expect_peek_left_paren parser in
@@ -202,6 +208,7 @@ and parse_function_parameters parser =
           let parser = next_token parser in
           let parser, identifer = parse_identifier parser in
           parse_function_parameters' parser (identifer :: identifiers)
+      | Token.RightParen -> (next_token parser, List.rev identifiers)
       | _ -> (parser, List.rev identifiers)
   in
   parse_function_parameters' parser []
@@ -464,6 +471,17 @@ Program: [
       ]
     }};
 ]
+    |}];
+    let input = {|
+    fn(x) { return x; }
+   |} in
+    expect_program input;
+    [%expect
+      {|
+Program: [
+  EXPR FunctionLiteral {parameters = [{ identifier = "x" }];
+  body = { statements = [(Return (Identifier { identifier = "x" }))] }};
+]
     |}]
 
   let%expect_test "TestFunctionCall" =
@@ -503,4 +521,15 @@ Program: [
   arguments = [(Integer 2); (Integer 3)]};
 ]
      |}]
+
+  let%expect_test "testStringLiteral" =
+   let input = {|
+   "hello world";
+|} in
+ expect_program input;
+  [%expect {|
+Program: [
+  EXPR (String "hello world");
+]
+|}]
 end

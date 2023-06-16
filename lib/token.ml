@@ -25,6 +25,7 @@ type t =
   | False
   | Function
   | Let
+  | String of string
   | Eof
 [@@deriving show, eq, sexp]
 
@@ -55,6 +56,7 @@ let token_of_string = function
   | False -> "false"
   | Function -> "Function"
   | Let -> "Let"
+  | String s -> "String " ^ s
   | Eof -> "Eof"
 
 let lookup_ident ident =

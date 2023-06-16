@@ -2,35 +2,90 @@ type t = { parser : Parser.t }
 
 let init parser = { parser }
 
-let rec eval node =
+let rec eval node env =
   match node with
-  | Ast.Program p -> eval_statements p.statements
-  | Ast.Expression expr -> eval_expr expr
-  | Ast.Statement statement -> eval_statement statement
+  | Ast.Program p -> eval_program p env
+  | Ast.Expression expr -> eval_expr expr env
+  | Ast.Statement statement -> eval_statement statement env
   | _ -> failwith "unexpected node"
 
-and eval_expr expr =
+and eval_program program env =
+  let rec eval_program' statements env result =
+    match statements with
+    | [] -> result
+    | h :: rest -> (
+        let result = eval_statement h env in
+        match result with
+        | Object.Return o -> o
+        | _ -> eval_program' rest env result)
+  in
+  eval_program' program.statements env Object.Null
+
+and eval_expr expr env =
   match expr with
+  | Identifier ident -> eval_identifier ident env
   | Integer i -> Object.Integer i
   | Boolean b -> eval_boolean b
+  | String s -> Object.String s
   | Prefix { operator; right } ->
-      let result = eval_expr right in
+      let result = eval_expr right env in
       eval_prefix_expr operator result
   | Infix { left; operator; right } ->
-      let left = eval_expr left in
-      let right = eval_expr right in
+      let left = eval_expr left env in
+      let right = eval_expr right env in
       eval_infix_expr operator left right
   | If { condition; consequence; alternative } ->
-      eval_if_statement condition consequence alternative
+      eval_if_statement condition consequence alternative env
+  | FunctionLiteral { parameters; body } ->
+      Object.Function { parameters; body; env }
+  | Call { func; arguments } ->
+      let func = eval_expr func env in
+      let args = eval_exprs arguments env in
+      apply_function func args
   | _ -> failwith "unexpected expr"
 
-and eval_if_statement condition consequence alternative =
-  let condition = eval_expr condition in
-  if is_truthy condition then eval_block consequence
-  else if Option.is_some alternative then eval_block (Option.get alternative)
+and eval_exprs expressions env =
+  let rec eval_exprs' expressions env results =
+    match expressions with
+    | [] -> List.rev results
+    | h :: rest ->
+        let evaluated = eval_expr h env in
+        eval_exprs' rest env (evaluated :: results)
+  in
+  eval_exprs' expressions env []
+
+and apply_function func args =
+  match func with
+  | Object.Function func -> (
+      let extended_env = extend_function_env func args in
+      let evaluated = eval_block func.body extended_env in
+      match evaluated with Object.Return v -> v | _ -> evaluated)
+  | _ -> failwith "apply_function"
+
+and extend_function_env func args =
+  let env = Environment.init_with_env func.env in
+  let rec arg_iter params idx =
+    match params with
+    | [] -> env
+    | (h :: rest : Ast.identifier list) ->
+        let _ = Environment.set env h.identifier (List.nth args idx) in
+        arg_iter rest (idx + 1)
+  in
+  arg_iter func.parameters 0
+
+and eval_identifier ident env =
+  match Environment.get env ident.identifier with
+  | Some v -> v
+  | None -> Object.Null
+
+and eval_if_statement condition consequence alternative env =
+  let condition = eval_expr condition env in
+  if is_truthy condition then eval_block consequence env
+  else if Option.is_some alternative then
+    eval_block (Option.get alternative) env
   else Object.Null
 
-and eval_block block = eval_statements block.statements
+and eval_block block env = eval_statements block.statements env
 
 and is_truthy = function
   | Object.Null -> false
@@ -45,7 +100,14 @@ and eval_infix_expr operator left right =
       eval_integer_infix_expr operator left right
   | Object.Boolean _, Object.Boolean _ ->
       eval_integer_infix_expr operator left right
+  | Object.String _, Object.String _ ->
+      eval_string_infix_expr operator left right
   | _ -> Object.Null
+
+and eval_string_infix_expr operator left right =
+  match (operator, left, right) with
+  | Token.Plus, Object.String l, Object.String r -> Object.String (l ^ r)
+  | _ -> failwith "expected strings"
 
 and eval_integer_infix_expr operator left right =
   match (operator, left, right) with
@@ -91,32 +153,55 @@ and eval_bang_expr right =
   | Object.Null -> Object.Boolean true
   | _ -> failwith "expected a boolean: %s"
 
-and eval_statements statements =
-  let rec eval_statements' statements result =
+and eval_statements statements env =
+  let rec eval_statements' statements env result =
     match statements with
     | [] -> result
-    | h :: rest ->
-        let result = eval_statement h in
-        eval_statements' rest result
+    | h :: rest -> (
+        let result = eval_statement h env in
+        match result with
+        | Object.Return _ -> result
+        | _ -> eval_statements' rest env result)
   in
-  eval_statements' statements Object.Null
+  eval_statements' statements env Object.Null
 
-and eval_statement statement =
+and eval_statement statement env =
   match statement with
-  | Ast.ExpressionStatement expr -> eval_expr expr
+  | Ast.ExpressionStatement expr -> eval_expr expr env
+  | Ast.Let { name; value } ->
+      let result = eval_expr value env in
+      Environment.set env name.identifier result
+  | Ast.Return expr -> Object.Return (eval_expr expr env)
+  | Ast.BlockStatement block -> eval_block_statement block env
   | _ -> failwith "unsupported statement"
+
+and eval_block_statement block env =
+  let rec eval_block_statement' statements env result =
+    match statements with
+    | [] -> result
+    | h :: rest -> (
+        let result = eval_statement h env in
+        match result with
+        | Object.Return o -> o
+        | _ -> eval_block_statement' rest env result)
+  in
+  eval_block_statement' block.statements env Object.Null
 
 module Test = struct
   let eval_program input =
     let lexer = Lexer.init input in
     let parser = Parser.init lexer in
     let program = Parser.parse parser in
-    match program with Ok p -> eval p | _ -> failwith "error parsing program"
+    let env = Environment.init () in
+    match program with
+    | Ok p -> eval p env
+    | _ -> failwith "error parsing program"
 
   let expect_primative obj =
     match obj with
     | Object.Integer i -> Fmt.pr "%i\n" i
     | Object.Boolean b -> Fmt.pr "%b\n" b
+    | Object.String s -> Fmt.pr "%s\n" s
     | Object.Null -> Fmt.pr "null"
     | _ -> Fmt.failwith "unexpected obj: %s" (Object.show obj)
 
@@ -300,4 +385,101 @@ module Test = struct
     [%expect {|
     20
   |}]
+
+  let%expect_test "testReturnValue" =
+    let input = {|
+    return 10;
+  |} in
+    expect_result input;
+    [%expect {|
+    10
+  |}];
+    let input = {|
+    9; return 5 * 2; 9;
+  |} in
+    expect_result input;
+    [%expect {|
+    10
+  |}];
+    let input =
+      {|
+    if(10 > 1) {
+      if(10 > 1) {
+        return 10;
+      }
+
+      return 1;
+    }
+  |}
+    in
+    expect_result input;
+    [%expect {|
+    10
+  |}]
+
+  let%expect_test "testLetStatements" =
+    let input = {|
+   let a = 5; a;
+ |} in
+    expect_result input;
+    [%expect {|
+   5
+ |}]
+
+  let%expect_test "testFunctionLiteral" =
+    let input = {|
+   let identity = fn(x) { x; }; identity(5);
+ |} in
+    expect_result input;
+    [%expect {|
+   5
+ |}];
+    let input = {|
+   let add = fn(x, y) { x + y; }; add(5, 5)
+ |} in
+    expect_result input;
+    [%expect {|
+   10
+ |}];
+    let input =
+      {|
+let newAdder = fn(x) {
+     fn(y) { x + y };
+};
+   let addTwo = newAdder(2);
+   addTwo(2);
+ |}
+    in
+    expect_result input;
+    [%expect {|
+4
+ |}]
+
+  let%expect_test "testStringLiteral" =
+    let input = {|
+   "Hello World!";
+ |} in
+    expect_result input;
+    [%expect {|
+ Hello World!
+ |}]
+
+  let%expect_test "testStringConcatenation" =
+    let input = {|
+   "Hello" + " " + "World!"
+ |} in
+    expect_result input;
+    [%expect {|
+Hello World!
+ |}]
+
+      let%expect_test "testBuiltinFunction" =
+    let input = {|
+    let("")
+  |} in
+    expect_result input;
+    [%expect {|
+    0
+  |}
+   ]
 end
