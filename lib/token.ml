@@ -10,6 +10,9 @@ type t =
   | RightParen
   | LeftBrace
   | RightBrace
+  | LeftBracket
+  | RightBracket
+  | Colon
   | Minus
   | Bang
   | Asterisk
@@ -41,6 +44,9 @@ let token_of_string = function
   | RightParen -> "RightParen"
   | LeftBrace -> "LeftBrace"
   | RightBrace -> "RightBrace"
+  | LeftBracket -> "LeftBracket"
+  | RightBracket -> "RightBracket"
+  | Colon -> ":"
   | Minus -> "-"
   | Bang -> "!"
   | Asterisk -> "*"

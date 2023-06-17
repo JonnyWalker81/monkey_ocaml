@@ -12,6 +12,7 @@ type precedence =
   | Product
   | Prefix
   | Call
+  | Index
 [@@deriving enum, show, ord]
 
 let token_prec = function
@@ -20,6 +21,7 @@ let token_prec = function
   | Token.Plus | Token.Minus -> Sum
   | Token.Slash | Token.Asterisk -> Product
   | Token.LeftParen -> Call
+  | Token.LeftBracket -> Index
   | _ -> Lowest
 
 let next_token parser =
@@ -58,6 +60,12 @@ let expect_peek_left_brace parser =
 
 let expect_peek_right_brace parser =
   expect_peek parser (function Token.RightBrace -> true | _ -> false)
+
+let expect_peek_right_bracket parser =
+  expect_peek parser (function Token.RightBracket -> true | _ -> false)
+
+let expect_peek_colon parser =
+  expect_peek parser (function Token.Colon -> true | _ -> false)
 
 let peek_is parser token =
   if Token.equal parser.peek_token token then true else false
@@ -143,7 +151,15 @@ and get_infix_fn parser =
   | Token.NotEqual | Token.LessThan | Token.GreaterThan ->
       Some parse_infix_expression
   | Token.LeftParen -> Some parse_call_expression
+  | Token.LeftBracket -> Some parse_index_expression
   | _ -> None
+
+and parse_index_expression parser left =
+  let parser = next_token parser in
+  let parser, index = parse_expression parser Lowest in
+  let parser, ok = expect_peek_right_bracket parser in
+  if not ok then failwith "expected right bracket for index op"
+  else (parser, Ast.Index { left; index })
 
 and parse_infix_expression parser left =
   let op = parser.cur_token in
@@ -178,7 +194,61 @@ and parse_prefix_expression parser =
   | Token.If -> parse_if_expression parser
   | Token.Function -> parse_function_expression parser
   | Token.String _ -> parse_string parser
+  | Token.LeftBracket -> parse_array parser
+  | Token.LeftBrace -> parse_hash parser
   | tok -> failwith (Printf.sprintf "unhandled token: %s" (Token.show tok))
+
+and parse_hash parser =
+  let rec parse_hash' parser pairs =
+    match parser.peek_token with
+    | Token.RightBrace -> (parser, List.rev pairs)
+    | _ -> (
+        let parser = next_token parser in
+        let parser, key = parse_expression parser Lowest in
+        let parser, ok = expect_peek_colon parser in
+        if not ok then failwith "expected colon"
+        else
+          let parser = next_token parser in
+          let parser, value = parse_expression parser Lowest in
+          let pairs = (key, value) :: pairs in
+          match parser.peek_token with
+          | Token.Comma ->
+              let parser = next_token parser in
+              parse_hash' parser pairs
+          | _ -> (parser, List.rev pairs))
+  in
+
+  let parser, pairs = parse_hash' parser [] in
+  let parser, ok = expect_peek_right_brace parser in
+  if not ok then failwith "parse_hash: expected right brace"
+  else (parser, Ast.Hash pairs)
+
+and parse_expression_list parser ~end_token =
+  if peek_is parser end_token then (next_token parser, [])
+  else
+    let parser = next_token parser in
+    let parser, expression = parse_expression parser Lowest in
+    let rec parse' parser expressions =
+      if peek_is parser end_token then (next_token parser, List.rev expressions)
+      else
+        match parser.peek_token with
+        | Token.Comma ->
+            let parser = next_token parser in
+            let parser = next_token parser in
+            let parser, expression = parse_expression parser Lowest in
+            parse' parser (expression :: expressions)
+        | tok when phys_equal tok end_token ->
+            (next_token parser, List.rev expressions)
+        | _ -> (parser, List.rev expressions)
+    in
+    let parser, exprs = parse' parser [ expression ] in
+    (parser, exprs)
+
+and parse_array parser =
+  let parser, exprs =
+    parse_expression_list parser ~end_token:Token.RightBracket
+  in
+  (parser, Ast.Array exprs)
 
 and parse_string parser =
   match parser.cur_token with
@@ -214,13 +284,10 @@ and parse_function_parameters parser =
   parse_function_parameters' parser []
 
 and parse_call_expression parser fn =
-  let parser, arguments = parse_function_arguments parser in
-  if not (peek_is parser Token.RightParen) then
-    failwith "expected a right paren after args"
-  else
-    let parser = next_token parser in
-    let parser = chomp_semicolon parser in
-    (parser, Ast.Call { func = fn; arguments })
+  let parser, arguments =
+    parse_expression_list parser ~end_token:Token.RightParen
+  in
+  (parser, Ast.Call { func = fn; arguments })
 
 and parse_function_arguments parser =
   if peek_is parser Token.RightParen then (next_token parser, [])
@@ -523,13 +590,62 @@ Program: [
      |}]
 
   let%expect_test "testStringLiteral" =
-   let input = {|
+    let input = {|
    "hello world";
 |} in
- expect_program input;
-  [%expect {|
+    expect_program input;
+    [%expect {|
 Program: [
   EXPR (String "hello world");
 ]
 |}]
+
+  let%expect_test "testArrayLiteral" =
+    let input = {|
+  [1, 2 * 2, 3 + 3];
+|} in
+    expect_program input;
+    [%expect
+      {|
+Program: [
+  EXPR (Array
+   [(Integer 1);
+     Infix {left = (Integer 2); operator = Token.Asterisk;
+       right = (Integer 2)};
+     Infix {left = (Integer 3); operator = Token.Plus; right = (Integer 3)}]);
+]
+|}]
+
+  let%expect_test "testArrayIndex" =
+    let input = {|
+  myArray[1 + 1]
+|} in
+    expect_program input;
+    [%expect
+      {|
+Program: [
+  EXPR Index {left = (Identifier { identifier = "myArray" });
+  index =
+  Infix {left = (Integer 1); operator = Token.Plus; right = (Integer 1)}};
+]
+|}]
+
+  let%expect_test "testHashLiteral" =
+    let input = {|
+    {"one": 0 + 1, "two": 10 - 8, "three": 15 / 5}
+  |} in
+    expect_program input;
+    [%expect
+      {|
+Program: [
+  EXPR (Hash
+   [((String "one"),
+     Infix {left = (Integer 0); operator = Token.Plus; right = (Integer 1)});
+     ((String "two"),
+      Infix {left = (Integer 10); operator = Token.Minus; right = (Integer 8)});
+     ((String "three"),
+      Infix {left = (Integer 15); operator = Token.Slash; right = (Integer 5)})
+     ]);
+]
+  |}]
 end

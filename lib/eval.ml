@@ -2,12 +2,48 @@ type t = { parser : Parser.t }
 
 let init parser = { parser }
 
-let rec eval node env =
+let rec eval node =
+  let env = make_env in
   match node with
   | Ast.Program p -> eval_program p env
   | Ast.Expression expr -> eval_expr expr env
   | Ast.Statement statement -> eval_statement statement env
   | _ -> failwith "unexpected node"
+
+and make_env =
+  let env = Environment.init () in
+  Environment.set env "len"
+  @@ Object.builtin_fn (function
+       | [ Object.String str ] -> Object.Integer (String.length str)
+       | [ Object.Array arr ] -> Object.Integer (List.length arr)
+       | args when List.length args > 1 ->
+           failwith "must only pass one arg to len"
+       | _ -> failwith "unhandled len");
+  Environment.set env "first"
+  @@ Object.builtin_fn (function
+       | [ Object.Array arr ] -> List.nth arr 0
+       | args when List.length args > 1 -> failwith "must only pass one arg"
+       | _ -> Object.Null);
+  Environment.set env "last"
+  @@ Object.builtin_fn (function
+       | [ Object.Array arr ] ->
+           if List.length arr > 0 then List.nth arr (List.length arr - 1)
+           else Object.Null
+       | args when List.length args > 1 -> failwith "must only pass one arg"
+       | _ -> failwith "expected array");
+  Environment.set env "rest"
+  @@ Object.builtin_fn (function
+       | [ Object.Array (_ :: rest) ] -> Object.Array rest
+       | args when List.length args > 1 -> failwith "must only pass one arg"
+       | _ -> failwith "expected array");
+  Environment.set env "push"
+  @@ Object.builtin_fn (function
+       | [ Object.Array arr; obj ] -> Object.Array (List.append arr [ obj ])
+       | args when List.length args > 2 ->
+           failwith "must only pass two arguments"
+       | _ -> failwith "expected array");
+
+  env
 
 and eval_program program env =
   let rec eval_program' statements env result =
@@ -42,7 +78,31 @@ and eval_expr expr env =
       let func = eval_expr func env in
       let args = eval_exprs arguments env in
       apply_function func args
+  | Array exprs ->
+      let elements = eval_exprs exprs env in
+      Object.Array elements
+  | Index { left; index } -> eval_index left index env
   | _ -> failwith "unexpected expr"
+
+and eval_index left index env =
+  let left = eval_expr left env in
+  let index = eval_expr index env in
+  eval_index_expr left index
+
+and eval_index_expr left index =
+  match (left, index) with
+  | Object.Array _, Object.Integer _ -> eval_array_index_expression left index
+  | _ -> failwith "index operator not supported"
+
+and eval_array_index_expression array index =
+  match array with
+  | Object.Array arr -> (
+      match index with
+      | Object.Integer i ->
+          let max = List.length arr in
+          if i < 0 || i > max then Object.Null else List.nth arr i
+      | _ -> failwith "expected an integer")
+  | _ -> failwith "expected an array"
 
 and eval_exprs expressions env =
   let rec eval_exprs' expressions env results =
@@ -60,6 +120,7 @@ and apply_function func args =
       let extended_env = extend_function_env func args in
       let evaluated = eval_block func.body extended_env in
       match evaluated with Object.Return v -> v | _ -> evaluated)
+  | Object.Builtin (Object.BuiltinFn fn) -> fn args
   | _ -> failwith "apply_function"
 
 and extend_function_env func args =
@@ -170,7 +231,8 @@ and eval_statement statement env =
   | Ast.ExpressionStatement expr -> eval_expr expr env
   | Ast.Let { name; value } ->
       let result = eval_expr value env in
-      Environment.set env name.identifier result
+      Environment.set env name.identifier result;
+      result
   | Ast.Return expr -> Object.Return (eval_expr expr env)
   | Ast.BlockStatement block -> eval_block_statement block env
   | _ -> failwith "unsupported statement"
@@ -188,20 +250,23 @@ and eval_block_statement block env =
   eval_block_statement' block.statements env Object.Null
 
 module Test = struct
+  open Base
+
   let eval_program input =
     let lexer = Lexer.init input in
     let parser = Parser.init lexer in
     let program = Parser.parse parser in
-    let env = Environment.init () in
-    match program with
-    | Ok p -> eval p env
-    | _ -> failwith "error parsing program"
+    match program with Ok p -> eval p | _ -> failwith "error parsing program"
 
-  let expect_primative obj =
+  let rec expect_primative obj =
     match obj with
     | Object.Integer i -> Fmt.pr "%i\n" i
     | Object.Boolean b -> Fmt.pr "%b\n" b
     | Object.String s -> Fmt.pr "%s\n" s
+    | Object.Array arr ->
+        Fmt.pr "[@.";
+        List.iter arr ~f:(fun s -> expect_primative s);
+        Fmt.pr "]@."
     | Object.Null -> Fmt.pr "null"
     | _ -> Fmt.failwith "unexpected obj: %s" (Object.show obj)
 
@@ -473,13 +538,122 @@ let newAdder = fn(x) {
 Hello World!
  |}]
 
-      let%expect_test "testBuiltinFunction" =
+  let%expect_test "testBuiltinFunction" =
     let input = {|
-    let("")
+    len("");
   |} in
     expect_result input;
     [%expect {|
     0
-  |}
-   ]
+  |}];
+    let input = {|
+    len("test");
+  |} in
+    expect_result input;
+    [%expect {|
+    4
+  |}];
+    let input = {|
+    len("hello world");
+  |} in
+    expect_result input;
+    [%expect {|
+    11
+  |}]
+
+  let%expect_test "testArrayIndex" =
+    let input = {|
+    [1, 2, 3][0]
+  |} in
+    expect_result input;
+    [%expect {|
+    1
+  |}];
+    let input = {|
+    [1, 2, 3][1]
+  |} in
+    expect_result input;
+    [%expect {|
+    2
+  |}];
+    let input = {|
+let myArray = [1, 2, 3]; myArray[2];
+  |} in
+    expect_result input;
+    [%expect {|
+    3
+  |}];
+    let input = {|
+let myArray = [1, 2, 3]; myArray[-1];
+  |} in
+    expect_result input;
+    [%expect {|
+    null
+  |}]
+
+  let%expect_test "testArrayBuiltins" =
+    let input = {|
+let arr = [1, 2, 3];
+  let f = first(arr);
+    f
+|} in
+    expect_result input;
+    [%expect {|
+1
+|}];
+    let input = {|
+let arr = [1, 2, 3];
+  let l = last(arr);
+    l
+|} in
+    expect_result input;
+    [%expect {|
+3
+|}];
+    let input = {|
+let arr = [1, 2, 3];
+  let r = rest(arr);
+    r
+|} in
+    expect_result input;
+    [%expect {|
+[
+2
+3
+]
+|}];
+    let input =
+      {|
+let arr = [1, 2, 3, 4,5,6];
+  let r = rest(rest(rest(arr)));
+    r
+|}
+    in
+    expect_result input;
+    [%expect {|
+[
+4
+5
+6
+]
+|}];
+    let input =
+      {|
+let arr = [1, 2, 3, 4,5,6];
+  let r = push(arr, 10);
+    r
+|}
+    in
+    expect_result input;
+    [%expect {|
+[
+1
+2
+3
+4
+5
+6
+10
+]
+|}]
 end

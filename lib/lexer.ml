@@ -90,6 +90,9 @@ let next_token lexer =
   | '/' -> (read_char lexer, Token.Slash)
   | '<' -> (read_char lexer, Token.LessThan)
   | '>' -> (read_char lexer, Token.GreaterThan)
+  | '[' -> (read_char lexer, Token.LeftBracket)
+  | ']' -> (read_char lexer, Token.RightBracket)
+  | ':' -> (read_char lexer, Token.Colon)
   | '"' -> let lexer, s = read_string (read_char  lexer) in
       (lexer, s)
   | '\x00' -> (read_char lexer, Token.Eof)
@@ -156,6 +159,8 @@ module Test = struct
    10 != 9;
    "foobar"
    "foo bar"
+   [1, 2];
+     {"foo": "bar"}
     |}
     in
 
@@ -238,6 +243,17 @@ module Test = struct
     Token.Semicolon
     (Token.String "foobar")
     (Token.String "foo bar")
+    Token.LeftBracket
+    (Token.Integer "1")
+    Token.Comma
+    (Token.Integer "2")
+    Token.RightBracket
+    Token.Semicolon
+    Token.LeftBrace
+    (Token.String "foo")
+    Token.Colon
+    (Token.String "bar")
+    Token.RightBrace
     Token.Eof
     |}]
 end

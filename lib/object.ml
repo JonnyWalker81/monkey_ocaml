@@ -7,6 +7,7 @@ type t =
   | Return of t
   | Function of func
   | Builtin of builtin
+  | Array of t list
   | Null
 [@@deriving show]
 
@@ -18,4 +19,16 @@ and func = {
 [@@deriving show]
 
 
-and builtin = t list -> t
+and builtin = BuiltinFn of (t list -> t)
+    [@@deriving show { with_path = false }]
+
+(* | Macro of macro *)
+(* and macro = *)
+(*   { m_parameters : Ast.identifier list *)
+(*   ; m_body : Ast.block *)
+(*   ; m_env : t environment [@opaque] *)
+(*   } *)
+
+let monkey_true = Boolean true
+let monkey_false = Boolean false
+let builtin_fn f = Builtin (BuiltinFn f)

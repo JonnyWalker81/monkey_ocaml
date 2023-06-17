@@ -13,4 +13,4 @@ let rec get (env:'a t) key  =
 
 let set env key value =
   Hashtbl.add env.env key value;
-  value
+  ()

@@ -1,3 +1,5 @@
+open Core
+
 type identifier = { identifier : string }
 [@@deriving show { with_path = false }, sexp]
 
@@ -16,8 +18,11 @@ and expression =
       consequence : block;
       alternative : block option;
     }
-  | FunctionLiteral of {parameters: identifier list; body: block}
-  | Call of {func: expression; arguments: expression list}
+  | FunctionLiteral of { parameters : identifier list; body : block }
+  | Call of { func : expression; arguments : expression list }
+  | Array of expression list
+  | Index of { left : expression; index : expression }
+  | Hash of (expression * expression) list
 [@@deriving show { with_path = false }, sexp]
 
 and statement =
